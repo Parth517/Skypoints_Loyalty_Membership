@@ -69,3 +69,48 @@ WHEN NOT MATCHED THEN
         src.MEMBER_ID, src.FEED_DATE, src.TXN_ID, src.TXN_DATE, src.PARTNER, src.MILES_REDEEMED, src.STATUS,
         src.SOURCE_FILE, src.BATCH_ID
     );
+
+-- =============================================================================
+-- 3. JOINING REDEMPTIONS TO MEMBER PROFILE DATA (Assessment Deliverable 4)
+-- =============================================================================
+-- The assessment requires describing and demonstrating how redemption data
+-- joins back to member profile data.
+--
+-- DESIGN DECISIONS:
+-- 1. Grain: Each row represents one distinct redemption transaction (TXN_ID).
+-- 2. Join Key: MEMBER_ID.
+-- 3. Profile Version: Joins against the member's deduplicated valid profile
+--    to enrich transactions with Member Name, Tier, Country, State, Agent, and Age.
+-- =============================================================================
+
+SELECT 
+    r.TXN_ID,
+    r.TXN_DATE,
+    r.FEED_DATE,
+    r.PARTNER,
+    r.MILES_REDEEMED,
+    r.STATUS,
+    r.MEMBER_ID,
+    m.MEMBER_NAME,
+    m.TIER_CODE,
+    m.AGE,
+    m.STALE_MEMBER,
+    m.AGENT_NAME,
+    m.STATE,
+    m.COUNTRY AS MEMBER_COUNTRY,
+    m.IS_ACTIVE
+FROM STG.STG_REDEMPTIONS r
+LEFT JOIN (
+    SELECT *
+    FROM STG.STG_MEMBERS
+    WHERE IS_VALID = TRUE
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY MEMBER_ID 
+        ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
+    ) = 1
+) m ON r.MEMBER_ID = m.MEMBER_ID
+WHERE r.MILES_REDEEMED > 0
+  AND r.STATUS IN ('COMPLETED', 'PENDING', 'CANCELLED')
+  AND r.TXN_DATE IS NOT NULL
+  AND r.TXN_DATE <= CURRENT_DATE()
+  AND m.MEMBER_ID IS NOT NULL;
