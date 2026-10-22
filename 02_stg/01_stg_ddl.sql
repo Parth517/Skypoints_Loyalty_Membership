@@ -57,3 +57,43 @@ CREATE OR REPLACE TABLE STG.STG_MEMBERS_REJECTED (
 )
 CLUSTER BY (BATCH_ID)
 COMMENT = 'Stage: Dead Letter Queue (DLQ) preserving unparsed rejected records with reason codes.';
+
+
+
+-- ── 3. REF_COUNTRY_LOOKUP: Dynamic country resolution lookup table ────────────
+CREATE TABLE IF NOT EXISTS STG.REF_COUNTRY_LOOKUP (
+    ALIAS               VARCHAR(100)    NOT NULL,
+    ISO_ALPHA3          VARCHAR(3)      NOT NULL,
+    COUNTRY_NAME        VARCHAR(100),
+    PRIMARY KEY (ALIAS)
+)
+COMMENT = 'Silver: Reference table mapping country names, prefixes, abbreviations, and ISO codes to canonical 3-letter ISO code.';
+
+-- Populate lookup table with comprehensive seed mappings (idempotent MERGE)
+MERGE INTO STG.REF_COUNTRY_LOOKUP tgt
+USING (
+    SELECT UPPER(TRIM(COLUMN1)) AS ALIAS, UPPER(TRIM(COLUMN2)) AS ISO_ALPHA3, TRIM(COLUMN3) AS COUNTRY_NAME
+    FROM VALUES
+        -- India
+        ('IND', 'IND', 'India'), ('INDIA', 'IND', 'India'), ('INDI', 'IND', 'India'), ('IN', 'IND', 'India'), ('BHARAT', 'IND', 'India'),
+        -- Australia
+        ('AUS', 'AUS', 'Australia'), ('AUSTRALIA', 'AUS', 'Australia'), ('AUST', 'AUS', 'Australia'), ('AUSTRA', 'AUS', 'Australia'), ('AU', 'AUS', 'Australia'), ('OZ', 'AUS', 'Australia'),
+        -- Canada
+        ('CAN', 'CAN', 'Canada'), ('CANADA', 'CAN', 'Canada'), ('CANAD', 'CAN', 'Canada'), ('CDA', 'CAN', 'Canada'), ('CA', 'CAN', 'Canada'),
+        -- United States
+        ('USA', 'USA', 'United States'), ('US', 'USA', 'United States'), ('UNITED STATES', 'USA', 'United States'), ('UNITED STATES OF AMERICA', 'USA', 'United States'), ('U.S.A.', 'USA', 'United States'), ('U.S.', 'USA', 'United States'), ('AMERICA', 'USA', 'United States'),
+        -- Philippines
+        ('PHL', 'PHL', 'Philippines'), ('PHIL', 'PHL', 'Philippines'), ('PHILIPPINES', 'PHL', 'Philippines'), ('PHILIP', 'PHL', 'Philippines'), ('PH', 'PHL', 'Philippines'), ('PILIPINAS', 'PHL', 'Philippines'),
+        -- United Kingdom
+        ('GBR', 'GBR', 'United Kingdom'), ('GB', 'GBR', 'United Kingdom'), ('UK', 'GBR', 'United Kingdom'), ('UNITED KINGDOM', 'GBR', 'United Kingdom'), ('GREAT BRITAIN', 'GBR', 'United Kingdom'), ('BRITAIN', 'GBR', 'United Kingdom'), ('ENGLAND', 'GBR', 'United Kingdom'),
+        -- Singapore
+        ('SGP', 'SGP', 'Singapore'), ('SG', 'SGP', 'Singapore'), ('SINGAPORE', 'SGP', 'Singapore'), ('SING', 'SGP', 'Singapore'),
+        -- Germany
+        ('DEU', 'DEU', 'Germany'), ('DE', 'DEU', 'Germany'), ('GERMANY', 'DEU', 'Germany'), ('GER', 'DEU', 'Germany'), ('DEUTSCHLAND', 'DEU', 'Germany'),
+        -- New Zealand
+        ('NZL', 'NZL', 'New Zealand'), ('NZ', 'NZL', 'New Zealand'), ('NEW ZEALAND', 'NZL', 'New Zealand')
+) src
+ON tgt.ALIAS = src.ALIAS
+WHEN NOT MATCHED THEN
+    INSERT (ALIAS, ISO_ALPHA3, COUNTRY_NAME)
+    VALUES (src.ALIAS, src.ISO_ALPHA3, src.COUNTRY_NAME);
