@@ -1,0 +1,29 @@
+# Data Files (sensitive & high-volume payloads)
+files/
+*.csv
+*.tsv
+*.json
+*.parquet
+*.gz
+*.zip
+Results_*.csv
+.folder
+*.folder
+# Assessment and temporary artifacts
+*.pdf
+.tempmediaStorage/
+
+# Python virtual environment & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Snowflake credentials & local secrets
+.env
+*.p8
+credentials.json
+snowflake_creds.json
