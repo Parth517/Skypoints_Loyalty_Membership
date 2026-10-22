@@ -141,3 +141,137 @@ $$;
 
 -- Run the dynamic procedure (creates and populates TABLE_USA, TABLE_IND, TABLE_AUS, TABLE_CAN, TABLE_PHL, etc.):
 CALL PROD.SP_LOAD_DYNAMIC_COUNTRY_TABLES();
+
+-- =============================================================================
+-- 3. ENRICHED MEMBER REDEMPTIONS FACT MART (Assessment Deliverable 4)
+-- =============================================================================
+-- Production analytics table joining partner airline redemption transactions
+-- with member profile data.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
+    TXN_ID              VARCHAR(50)     NOT NULL,
+    TXN_DATE            DATE,
+    FEED_DATE           DATE,
+    PARTNER             VARCHAR(100),
+    MILES_REDEEMED      NUMBER(12),
+    STATUS              VARCHAR(20),
+    -- Joined Member Attributes
+    MEMBER_ID           VARCHAR(20)     NOT NULL,
+    MEMBER_NAME         VARCHAR(100),
+    TIER_CODE           VARCHAR(10),
+    AGE                 NUMBER(3),
+    STALE_MEMBER        VARCHAR(1),
+    AGENT_NAME          VARCHAR(100),
+    STATE               VARCHAR(50),
+    COUNTRY             VARCHAR(10)     COMMENT 'Member canonical 3-letter country',
+    POST_CODE           NUMBER(5),
+    IS_ACTIVE           NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
+    -- Audit
+    SOURCE_FILE         VARCHAR(500),
+    BATCH_ID            VARCHAR(50),
+    LOADED_AT           TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (TXN_ID)
+)
+CLUSTER BY (TXN_DATE, MEMBER_ID)
+COMMENT = 'Gold: Production fact table joining partner airline redemptions with member profiles';
+
+-- 6c. Purge any corrupted, invalid, or orphan transactions that may have leaked into the Gold mart
+DELETE FROM PROD.FACT_MEMBER_REDEMPTIONS 
+WHERE MILES_REDEEMED <= 0 
+   OR STATUS NOT IN ('COMPLETED', 'PENDING', 'CANCELLED')
+   OR TXN_DATE > CURRENT_DATE() 
+   OR TXN_DATE IS NULL
+   OR MEMBER_NAME IS NULL;
+
+-- Idempotent MERGE into FACT_MEMBER_REDEMPTIONS
+MERGE INTO PROD.FACT_MEMBER_REDEMPTIONS tgt
+USING (
+    WITH latest_member AS (
+        SELECT
+            MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, AGE, STALE_MEMBER,
+            AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
+            ENROLLMENT_DATE, LAST_FLIGHT_DATE
+        FROM STG.STG_MEMBERS
+        WHERE IS_VALID = TRUE
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY MEMBER_ID 
+            ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
+        ) = 1
+    ),
+    dedup_redemptions AS (
+        SELECT
+            TXN_ID,
+            TXN_DATE,
+            FEED_DATE,
+            PARTNER,
+            MILES_REDEEMED,
+            STATUS,
+            MEMBER_ID,
+            SOURCE_FILE,
+            BATCH_ID,
+            LOAD_TS
+        FROM STG.STG_REDEMPTIONS
+        WHERE MILES_REDEEMED > 0
+          AND STATUS IN ('COMPLETED', 'PENDING', 'CANCELLED')
+          AND TXN_DATE IS NOT NULL
+          AND TXN_DATE <= CURRENT_DATE()
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY TXN_ID
+            ORDER BY FEED_DATE DESC, LOAD_TS DESC, CASE WHEN STATUS = 'COMPLETED' THEN 1 ELSE 2 END
+        ) = 1
+    )
+    SELECT
+        r.TXN_ID,
+        r.TXN_DATE,
+        r.FEED_DATE,
+        r.PARTNER,
+        r.MILES_REDEEMED,
+        r.STATUS,
+        r.MEMBER_ID,
+        m.MEMBER_NAME,
+        m.TIER_CODE,
+        m.AGE,
+        m.STALE_MEMBER,
+        m.AGENT_NAME,
+        m.STATE,
+        m.COUNTRY,
+        m.POST_CODE,
+        CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS IS_ACTIVE,
+        r.SOURCE_FILE,
+        r.BATCH_ID
+    FROM dedup_redemptions r
+    LEFT JOIN latest_member m
+        ON r.MEMBER_ID = m.MEMBER_ID
+    WHERE m.MEMBER_ID IS NOT NULL
+) src
+ON tgt.TXN_ID = src.TXN_ID
+WHEN MATCHED THEN
+    UPDATE SET
+        tgt.TXN_DATE         = src.TXN_DATE,
+        tgt.FEED_DATE        = src.FEED_DATE,
+        tgt.PARTNER          = src.PARTNER,
+        tgt.MILES_REDEEMED   = src.MILES_REDEEMED,
+        tgt.STATUS           = src.STATUS,
+        tgt.MEMBER_NAME      = src.MEMBER_NAME,
+        tgt.TIER_CODE        = src.TIER_CODE,
+        tgt.AGE              = src.AGE,
+        tgt.STALE_MEMBER     = src.STALE_MEMBER,
+        tgt.AGENT_NAME       = src.AGENT_NAME,
+        tgt.STATE            = src.STATE,
+        tgt.COUNTRY          = src.COUNTRY,
+        tgt.POST_CODE        = src.POST_CODE,
+        tgt.IS_ACTIVE        = src.IS_ACTIVE,
+        tgt.BATCH_ID         = src.BATCH_ID,
+        tgt.LOADED_AT        = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN
+    INSERT (
+        TXN_ID, TXN_DATE, FEED_DATE, PARTNER, MILES_REDEEMED, STATUS,
+        MEMBER_ID, MEMBER_NAME, TIER_CODE, AGE, STALE_MEMBER, AGENT_NAME,
+        STATE, COUNTRY, POST_CODE, IS_ACTIVE, SOURCE_FILE, BATCH_ID
+    )
+    VALUES (
+        src.TXN_ID, src.TXN_DATE, src.FEED_DATE, src.PARTNER, src.MILES_REDEEMED, src.STATUS,
+        src.MEMBER_ID, src.MEMBER_NAME, src.TIER_CODE, src.AGE, src.STALE_MEMBER, src.AGENT_NAME,
+        src.STATE, src.COUNTRY, src.POST_CODE, src.IS_ACTIVE, src.SOURCE_FILE, src.BATCH_ID
+    );
